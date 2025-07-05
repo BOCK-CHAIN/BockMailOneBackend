@@ -1,0 +1,94 @@
+@import 'global/reset';
+@import 'global/variables';
+@import 'global/mixins';
+@import 'global/fonts';
+
+@import 'vendor/*';
+@import 'elements/*';
+@import 'components/*';
+@import 'global/utility';
+
+html.main {
+  font-family: 'Source Sans Pro', sans-serif;
+  font-size:14px;
+  height: 100%;
+  max-height: 100%;
+  background:$backgroundGrey;
+  body {
+    display:flex;
+    flex-direction: column;
+    height: 100%;
+    max-height: 100%;
+    overflow-x:hidden;
+  }
+}
+
+html.subPage {
+  font-family: 'Source Sans Pro', sans-serif;
+  font-size:14px;
+  background:$backgroundGrey;
+  body {
+    padding-top:100px;
+    padding-bottom:100px;
+  }
+  .subPage__logo {
+    margin-bottom:40px;
+    text-align:center;
+  }
+}
+
+.turbolinks-progress-bar {
+  background-color: $darkBlue;
+}
+.siteHeader__logoImage {
+  height: 30px; /* Adjust as needed */
+  width: auto;  /* Maintain aspect ratio */
+  vertical-align: middle; /* Align with text */
+  margin-right: 8px; /* Space between logo and text */
+}
+/* 1. Define the Keyframes for the Rotation Animation */
+@keyframes rotate360 {
+  from {
+    transform: rotate(0deg); /* Starts at 0 degrees */
+  }
+  to {
+    transform: rotate(360deg); /* Rotates to 360 degrees (one full circle) */
+  }
+}
+
+/* 2. Apply the Animation to your Logo Image */
+.siteHeader__logoImage {
+  /* Ensure your existing styles are here as well */
+  height: 30px; /* Adjust as needed */
+  width: auto;  /* Maintain aspect ratio */
+  vertical-align: middle; /* Align with text */
+  margin-right: 8px; /* Space between logo and text */
+
+  /* Add this line to apply the animation */
+  animation: rotate360 15s linear infinite;
+}
+
+.pageHeader {
+  display: flex; /* Makes the .pageHeader a flex container */
+  align-items: center; /* Vertically aligns the items (logo and text) in the middle */
+  gap: 12px; /* Adds a 15-pixel gap between the logo and the H1 title */
+
+  /* Optional: Add some padding or background for better visual separation */
+  padding: 15px 20px; /* Top/bottom padding 15px, left/right padding 20px */
+  background-color: #ffffff; /* Example: white background */
+  border-bottom: 1px solid #e0e0e0; /* Example: subtle bottom border */
+}
+
+/* You might want to ensure your logo image has a consistent size */
+.siteHeader__logoImage {
+  height: 40px; /* Adjust logo height as desired */
+  width: auto; /* Maintain aspect ratio */
+  /* Remove any margin-right you might have added previously if using gap */
+}
+
+/* It's good practice to reset default heading margins when using flexbox */
+.pageHeader__title {
+  margin: 0; /* Removes default top/bottom margin from the h1 */
+  font-size: 1.8em; /* Adjust font size if needed */
+  color: #333; /* Example: dark grey text color */
+}

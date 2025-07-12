@@ -1,6 +1,6 @@
 // my-email-backend/src/models/userModel.js
 const pool = require('../config/db');
-const { convert } = require('html-to-text'); // We'll use this library to strip HTML
+const { convert } = require('html-to-text');
 
 const User = {
     async findByEmail(email) {
@@ -21,56 +21,247 @@ const User = {
         return res.rows[0];
     },
 
-    // Modified to accept htmlBody and derive plainBody
     async addSentEmail(userId, sender, recipients, subject, htmlBody) {
-        // Convert HTML to plain text for plain_body column
         const plainBody = convert(htmlBody, {
             wordwrap: 130,
-            selectors: [{ selector: 'img', format: 'skip' }] // Skip images in plain text
+            selectors: [{ selector: 'img', format: 'skip' }]
         });
 
         const res = await pool.query(
-            'INSERT INTO sent_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *',
-            [userId, sender, JSON.stringify(recipients), subject, plainBody, htmlBody]
+            'INSERT INTO sent_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7) RETURNING *',
+            [userId, sender, JSON.stringify(recipients), subject, plainBody, htmlBody, 'sent']
         );
         return res.rows[0];
     },
 
-    // Modified to accept htmlBody and derive plainBody (for consistency, though webhook provides both)
     async addReceivedEmail(userId, sender, recipients, subject, plainBody, htmlBody) {
-        // If webhook provides plainBody, use it. Otherwise, derive from htmlBody.
         const finalPlainBody = plainBody || convert(htmlBody, {
             wordwrap: 130,
             selectors: [{ selector: 'img', format: 'skip' }]
         });
 
         const res = await pool.query(
-            'INSERT INTO received_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *',
-            [userId, sender, JSON.stringify(recipients), subject, finalPlainBody, htmlBody]
+            'INSERT INTO received_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7) RETURNING *',
+            [userId, sender, JSON.stringify(recipients), subject, finalPlainBody, htmlBody, 'inbox']
         );
         return res.rows[0];
     },
 
+    // Modified to filter out trashed emails and handle robust recipients parsing
     async getSentEmails(userId) {
         const res = await pool.query(
-            'SELECT id, sender, recipients, subject, plain_body, body_html, received_at FROM sent_emails WHERE user_id = $1 ORDER BY received_at DESC',
+            "SELECT id, sender, recipients, subject, plain_body, body_html, received_at FROM sent_emails WHERE user_id = $1 AND folder != 'trash' ORDER BY received_at DESC",
+            [userId]
+        );
+        return res.rows.map(row => {
+            let parsedRecipients;
+            try {
+                // Attempt to parse as JSON
+                parsedRecipients = JSON.parse(row.recipients);
+                // Ensure it's an array, even if JSON.parse returns a string (e.g., "email@example.com")
+                if (!Array.isArray(parsedRecipients)) {
+                    parsedRecipients = [parsedRecipients];
+                }
+            } catch (e) {
+                // If parsing fails, treat it as a plain string and wrap in an array
+                console.warn(`Failed to parse recipients for email ID ${row.id}: ${row.recipients}. Error: ${e.message}. Treating as plain string.`);
+                parsedRecipients = [row.recipients];
+            }
+            return {
+                ...row,
+                recipients: parsedRecipients
+            };
+        });
+    },
+
+    // Modified to filter out trashed emails and handle robust recipients parsing
+    async getReceivedEmails(userId) {
+        const res = await pool.query(
+            "SELECT id, sender, recipients, subject, plain_body, body_html, received_at FROM received_emails WHERE user_id = $1 AND folder != 'trash' ORDER BY received_at DESC",
+            [userId]
+        );
+        return res.rows.map(row => {
+            let parsedRecipients;
+            try {
+                // Attempt to parse as JSON
+                parsedRecipients = JSON.parse(row.recipients);
+                // Ensure it's an array, even if JSON.parse returns a string
+                if (!Array.isArray(parsedRecipients)) {
+                    parsedRecipients = [parsedRecipients];
+                }
+            } catch (e) {
+                // If parsing fails, treat it as a plain string and wrap in an array
+                console.warn(`Failed to parse recipients for email ID ${row.id}: ${row.recipients}. Error: ${e.message}. Treating as plain string.`);
+                parsedRecipients = [row.recipients];
+            }
+            return {
+                ...row,
+                recipients: parsedRecipients
+            };
+        });
+    },
+
+    // DRAFT FUNCTIONS
+
+    async saveDraft(userId, recipientEmail, subject, bodyHtml, attachmentsInfo, draftId = null) {
+        if (draftId) {
+            const res = await pool.query(
+                `UPDATE drafts
+                 SET recipient_email = $1, subject = $2, body_html = $3, attachments_info = $4, last_saved_at = NOW(), is_trashed = FALSE
+                 WHERE id = $5 AND user_id = $6 RETURNING id`,
+                [recipientEmail, subject, bodyHtml, attachmentsInfo, draftId, userId]
+            );
+            return res.rows[0];
+        } else {
+            const res = await pool.query(
+                `INSERT INTO drafts (user_id, recipient_email, subject, body_html, attachments_info, last_saved_at, is_trashed)
+                 VALUES ($1, $2, $3, $4, $5, NOW(), FALSE) RETURNING id`,
+                [userId, recipientEmail, subject, bodyHtml, attachmentsInfo]
+            );
+            return res.rows[0];
+        }
+    },
+
+    async getDraftsByUserId(userId) {
+        const res = await pool.query(
+            `SELECT id, recipient_email, subject, body_html, attachments_info, last_saved_at
+             FROM drafts
+             WHERE user_id = $1 AND is_trashed = FALSE
+             ORDER BY last_saved_at DESC`,
             [userId]
         );
         return res.rows.map(row => ({
             ...row,
-            recipients: row.recipients
+            attachments_info: row.attachments_info ? JSON.parse(row.attachments_info) : [],
         }));
     },
 
-    async getReceivedEmails(userId) {
+    async moveEmailToTrash(emailId, userId, emailType) {
+        let tableName;
+        if (emailType === 'sent') {
+            tableName = 'sent_emails';
+        } else if (emailType === 'inbox') {
+            tableName = 'received_emails';
+        } else {
+            throw new Error('Invalid email type for moving to trash.');
+        }
+
         const res = await pool.query(
-            'SELECT id, sender, recipients, subject, plain_body, body_html, received_at FROM received_emails WHERE user_id = $1 ORDER BY received_at DESC',
+            `UPDATE ${tableName} SET folder = 'trash' WHERE id = $1 AND user_id = $2 RETURNING id`,
+            [emailId, userId]
+        );
+        return res.rows[0];
+    },
+
+    async moveDraftToTrash(draftId, userId) {
+        const res = await pool.query(
+            `UPDATE drafts SET is_trashed = TRUE WHERE id = $1 AND user_id = $2 RETURNING id`,
+            [draftId, userId]
+        );
+        return res.rows[0];
+    },
+
+    async getTrashedItemsByUserId(userId) {
+        const trashedSent = await pool.query(
+            `SELECT id, 'sent' as type, sender, recipients, subject, plain_body, body_html, received_at as last_saved_at
+             FROM sent_emails
+             WHERE user_id = $1 AND folder = 'trash'`,
             [userId]
         );
-        return res.rows.map(row => ({
-            ...row,
-            recipients: row.recipients
-        }));
+
+        const trashedReceived = await pool.query(
+            `SELECT id, 'inbox' as type, sender, recipients, subject, plain_body, body_html, received_at as last_saved_at
+             FROM received_emails
+             WHERE user_id = $1 AND folder = 'trash'`,
+            [userId]
+        );
+
+        const trashedDrafts = await pool.query(
+            `SELECT id, 'draft' as type, recipient_email as recipients, subject, body_html, attachments_info, last_saved_at
+             FROM drafts
+             WHERE user_id = $1 AND is_trashed = TRUE`,
+            [userId]
+        );
+
+        let allTrashedItems = [
+            ...trashedSent.rows.map(row => {
+                let parsedRecipients;
+                try {
+                    parsedRecipients = JSON.parse(row.recipients);
+                    if (!Array.isArray(parsedRecipients)) parsedRecipients = [parsedRecipients];
+                } catch (e) {
+                    console.warn(`Failed to parse recipients for trashed sent email ID ${row.id}: ${row.recipients}. Error: ${e.message}.`);
+                    parsedRecipients = [row.recipients];
+                }
+                return { ...row, recipients: parsedRecipients };
+            }),
+            ...trashedReceived.rows.map(row => {
+                let parsedRecipients;
+                try {
+                    parsedRecipients = JSON.parse(row.recipients);
+                    if (!Array.isArray(parsedRecipients)) parsedRecipients = [parsedRecipients];
+                } catch (e) {
+                    console.warn(`Failed to parse recipients for trashed received email ID ${row.id}: ${row.recipients}. Error: ${e.message}.`);
+                    parsedRecipients = [row.recipients];
+                }
+                return { ...row, recipients: parsedRecipients };
+            }),
+            ...trashedDrafts.rows.map(row => ({ ...row, attachments_info: row.attachments_info ? JSON.parse(row.attachments_info) : [] }))
+        ];
+
+        allTrashedItems.sort((a, b) => new Date(b.last_saved_at) - new Date(a.last_saved_at));
+
+        return allTrashedItems;
+    },
+
+    async permanentlyDeleteEmail(emailId, userId, emailType) {
+        let tableName;
+        if (emailType === 'sent') {
+            tableName = 'sent_emails';
+        } else if (emailType === 'inbox') {
+            tableName = 'received_emails';
+        } else {
+            throw new Error('Invalid email type for permanent deletion.');
+        }
+
+        const res = await pool.query(
+            `DELETE FROM ${tableName} WHERE id = $1 AND user_id = $2`,
+            [emailId, userId]
+        );
+        return res;
+    },
+
+    async permanentlyDeleteDraft(draftId, userId) {
+        const res = await pool.query(
+            `DELETE FROM drafts WHERE id = $1 AND user_id = $2`,
+            [draftId, userId]
+        );
+        return res;
+    },
+
+    // NEW: Restore functions
+    async restoreEmail(emailId, userId, originalFolder) {
+        let tableName;
+        if (originalFolder === 'sent') {
+            tableName = 'sent_emails';
+        } else if (originalFolder === 'inbox') {
+            tableName = 'received_emails';
+        } else {
+            throw new Error('Invalid original folder for email restoration.');
+        }
+        const res = await pool.query(
+            `UPDATE ${tableName} SET folder = $1 WHERE id = $2 AND user_id = $3 RETURNING id`,
+            [originalFolder, emailId, userId]
+        );
+        return res.rows[0];
+    },
+
+    async restoreDraft(draftId, userId) {
+        const res = await pool.query(
+            `UPDATE drafts SET is_trashed = FALSE WHERE id = $1 AND user_id = $2 RETURNING id`,
+            [draftId, userId]
+        );
+        return res.rows[0];
     }
 };
 

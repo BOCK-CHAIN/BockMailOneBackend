@@ -4,26 +4,19 @@ const axios = require('axios');
 const authenticateToken = require('../middleware/authMiddleware');
 const User = require('../models/userModel');
 const mailparser = require('mailparser');
-const multer = require('multer'); // Import multer
+const multer = require('multer');
 
 const router = express.Router();
 
-// Configure multer for file uploads
-// Using memory storage for simplicity; for production, consider disk storage or cloud storage
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Route to send email - NOW HANDLES FILE UPLOADS AND MOVING DRAFT TO TRASH
 router.post('/send-email', authenticateToken, upload.array('attachments'), async (req, res) => {
     const { to, subject, bodyHtml, scheduledAt, draftIdToClear } = req.body;
     const from = req.user.email;
-    const userId = req.user.id; // Get userId from authenticated token
+    const userId = req.user.id;
 
-    // Ensure all required fields are present for immediate send
-    // If scheduled, subject/body might be empty initially, but 'to' is usually required.
     if (!to || !subject || !bodyHtml) {
-        // For drafts, we might allow empty fields, but for sending, they are crucial.
-        // This check is for actual sending, not draft saving.
-        // If it's a scheduled email, we still need 'to'
         if (!scheduledAt) {
             return res.status(400).json({ message: 'To, Subject, and Body are required for immediate sending.' });
         } else if (!to) {
@@ -42,22 +35,16 @@ router.post('/send-email', authenticateToken, upload.array('attachments'), async
     try {
         const recipientsArray = to.split(',').map(email => email.trim()).filter(email => email);
 
-        // Prepare attachments for Postal API
         const attachmentsForPostal = req.files ? req.files.map(file => ({
             filename: file.originalname,
-            content: file.buffer.toString('base64'), // Postal expects base64 content
+            content: file.buffer.toString('base64'),
             encoding: 'base64',
             mimetype: file.mimetype,
         })) : [];
 
         if (scheduledAt) {
-            // Placeholder for scheduling logic.
-            // In a real app, you'd save this to a 'scheduled_emails' table
-            // and have a background job send it at the scheduled time.
             console.log(`Email scheduled for ${scheduledAt} to ${to}`);
-            // Example: await User.addScheduledEmail(userId, from, recipientsArray, subject, bodyHtml, scheduledAt);
             
-            // NEW: Move draft to trash if it was sent from a draft
             if (draftIdToClear) {
                 try {
                     const moveResult = await User.moveDraftToTrash(parseInt(draftIdToClear), userId);
@@ -73,7 +60,6 @@ router.post('/send-email', authenticateToken, upload.array('attachments'), async
             return res.status(200).json({ message: 'Email scheduled successfully!' });
 
         } else {
-            // Send immediately via Postal
             const response = await axios.post(
                 postalApiUrl,
                 {
@@ -93,10 +79,8 @@ router.post('/send-email', authenticateToken, upload.array('attachments'), async
 
             console.log('Email sent via Postal:', response.data);
 
-            // Store sent email in your database.
             await User.addSentEmail(userId, from, recipientsArray, subject, bodyHtml);
 
-            // NEW: Move draft to trash if it was sent from a draft
             if (draftIdToClear) {
                 try {
                     const moveResult = await User.moveDraftToTrash(parseInt(draftIdToClear), userId);
@@ -119,7 +103,7 @@ router.post('/send-email', authenticateToken, upload.array('attachments'), async
     }
 });
 
-// Webhook for inbound emails from Postal (remains mostly the same)
+// Webhook for inbound emails from Postal
 router.post('/webhooks/postal/inbound', async (req, res) => {
     console.log('Received inbound email webhook:', JSON.stringify(req.body, null, 2));
 
@@ -168,7 +152,7 @@ router.post('/webhooks/postal/inbound', async (req, res) => {
 });
 
 
-// Route to fetch sent or inbox emails (remains the same, but model filters out trash)
+// Route to fetch sent or inbox emails
 router.get('/emails', authenticateToken, async (req, res) => {
     const { type } = req.query;
     const userId = req.user.id;
@@ -189,7 +173,7 @@ router.get('/emails', authenticateToken, async (req, res) => {
     }
 });
 
-// DRAFT ROUTES (previous ones)
+// DRAFT ROUTES
 
 // Save or Update a Draft
 router.post('/drafts', authenticateToken, upload.none(), async (req, res) => {
@@ -207,14 +191,14 @@ router.post('/drafts', authenticateToken, upload.none(), async (req, res) => {
             attachmentsInfoString,
             id ? parseInt(id) : null
         );
-        res.status(200).json({ message: 'Draft saved successfully!', draftId: result.id });
+        res.status(200).json({ message: 'Draft saved successfully!', draftId: result.id, is_starred: result.is_starred }); // Include is_starred
     } catch (error) {
         console.error('Error saving draft:', error);
         res.status(500).json({ message: 'Failed to save draft.', error: error.message });
     }
 });
 
-// Get all Drafts for the authenticated user (model filters out trashed)
+// Get all Drafts for the authenticated user
 router.get('/drafts', authenticateToken, async (req, res) => {
     const userId = req.user.id;
 
@@ -228,12 +212,12 @@ router.get('/drafts', authenticateToken, async (req, res) => {
 });
 
 
-// NEW TRASH ROUTES
+// TRASH ROUTES
 
 // Move an email (sent or inbox) to Trash
 router.post('/trash/email', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { emailId, emailType } = req.body; // emailType: 'sent' or 'inbox'
+    const { emailId, emailType } = req.body;
 
     if (!emailId || !emailType) {
         return res.status(400).json({ message: 'Email ID and type are required.' });
@@ -244,7 +228,7 @@ router.post('/trash/email', authenticateToken, async (req, res) => {
 
     try {
         const result = await User.moveEmailToTrash(parseInt(emailId), userId, emailType);
-        if (result && result.id) { // Check if an ID was returned (indicating success)
+        if (result && result.id) {
             res.status(200).json({ message: 'Email moved to trash successfully!' });
         } else {
             res.status(404).json({ message: 'Email not found or not authorized to move.' });
@@ -266,7 +250,7 @@ router.post('/trash/draft', authenticateToken, async (req, res) => {
 
     try {
         const result = await User.moveDraftToTrash(parseInt(draftId), userId);
-        if (result && result.id) { // Check if an ID was returned (indicating success)
+        if (result && result.id) {
             res.status(200).json({ message: 'Draft moved to trash successfully!' });
         } else {
             res.status(404).json({ message: 'Draft not found or not authorized to move.' });
@@ -294,7 +278,7 @@ router.get('/trash', authenticateToken, async (req, res) => {
 router.delete('/trash/emails/:id', authenticateToken, async (req, res) => {
     const emailId = parseInt(req.params.id);
     const userId = req.user.id;
-    const { type } = req.query; // 'sent' or 'inbox' to know which table to delete from
+    const { type } = req.query;
 
     if (!type || !['sent', 'inbox'].includes(type)) {
         return res.status(400).json({ message: 'Email type (sent/inbox) is required for permanent deletion.' });
@@ -326,6 +310,117 @@ router.delete('/trash/drafts/:id', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error permanently deleting draft:', error);
         res.status(500).json({ message: 'Failed to permanently delete draft.', error: error.message });
+    }
+});
+
+// RESTORE ROUTES
+
+// Restore an Email from Trash
+router.post('/trash/restore/email', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { emailId, originalFolder } = req.body;
+
+    if (!emailId || !originalFolder) {
+        return res.status(400).json({ message: 'Email ID and original folder are required for restoration.' });
+    }
+    if (!['sent', 'inbox'].includes(originalFolder)) {
+        return res.status(400).json({ message: 'Invalid original folder. Must be "sent" or "inbox".' });
+    }
+
+    try {
+        const result = await User.restoreEmail(parseInt(emailId), userId, originalFolder);
+        if (result && result.id) {
+            res.status(200).json({ message: 'Email restored successfully!' });
+        } else {
+            res.status(404).json({ message: 'Email not found or not authorized to restore.' });
+        }
+    } catch (error) {
+        console.error('Error restoring email:', error);
+        res.status(500).json({ message: 'Failed to restore email.', error: error.message });
+    }
+});
+
+// Restore a Draft from Trash
+router.post('/trash/restore/draft', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { draftId } = req.body;
+
+    if (!draftId) {
+        return res.status(400).json({ message: 'Draft ID is required for restoration.' });
+    }
+
+    try {
+        const result = await User.restoreDraft(parseInt(draftId), userId);
+        if (result && result.id) {
+            res.status(200).json({ message: 'Draft restored successfully!' });
+        } else {
+            res.status(404).json({ message: 'Draft not found or not authorized to restore.' });
+        }
+    } catch (error) {
+        console.error('Error restoring draft:', error);
+        res.status(500).json({ message: 'Failed to restore draft.', error: error.message });
+    }
+});
+
+// NEW STARRED ROUTES
+
+// Toggle Starred Status for an Email
+router.patch('/starred/email', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { emailId, emailType, isStarred } = req.body; // isStarred should be a boolean
+
+    if (!emailId || !emailType || typeof isStarred !== 'boolean') {
+        return res.status(400).json({ message: 'Email ID, type, and starred status are required.' });
+    }
+    if (!['sent', 'inbox'].includes(emailType)) {
+        return res.status(400).json({ message: 'Invalid email type. Must be "sent" or "inbox".' });
+    }
+
+    try {
+        const result = await User.updateEmailStarredStatus(parseInt(emailId), userId, emailType, isStarred);
+        if (result && result.id) {
+            res.status(200).json({ message: 'Email starred status updated!', is_starred: result.is_starred });
+        } else {
+            res.status(404).json({ message: 'Email not found or not authorized to update.' });
+        }
+    } catch (error) {
+        console.error('Error updating email starred status:', error);
+        res.status(500).json({ message: 'Failed to update email starred status.', error: error.message });
+    }
+});
+
+// Toggle Starred Status for a Draft
+router.patch('/starred/draft', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { draftId, isStarred } = req.body; // isStarred should be a boolean
+
+    if (!draftId || typeof isStarred !== 'boolean') {
+        return res.status(400).json({ message: 'Draft ID and starred status are required.' });
+    }
+
+    try {
+        const result = await User.updateDraftStarredStatus(parseInt(draftId), userId, isStarred);
+        if (result && result.id) {
+            res.status(200).json({ message: 'Draft starred status updated!', is_starred: result.is_starred });
+        } else {
+            res.status(404).json({ message: 'Draft not found or not authorized to update.' });
+        }
+    } catch (error) {
+        console.error('Error updating draft starred status:', error);
+        res.status(500).json({ message: 'Failed to update draft starred status.', error: error.message });
+    }
+});
+
+// Get all Starred Items
+router.get('/starred', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+
+    try {
+        const starredItems = await User.getStarredItemsByUserId(userId);
+        res.status(200).json(starredItems);
+    } catch (error) {
+        console.error('Error fetching starred items:', error);
+        res.status(500).json({ message: 'Failed to fetch starred items.', error: error.message });
     }
 });
 

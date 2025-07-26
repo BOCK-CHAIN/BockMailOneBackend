@@ -1,6 +1,7 @@
 // my-email-backend/src/models/userModel.js
 const pool = require('../config/db');
 const { convert } = require('html-to-text');
+const bcrypt = require('bcrypt');
 
 // Helper function for robust recipients parsing
 function parseRecipientsSafely(recipientsString, emailId = 'unknown') {
@@ -37,14 +38,15 @@ const User = {
 
     async create(email, hashedPassword, name) {
         const res = await pool.query(
-            'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING id, email, name',
+            'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING id, email, name, max_page_size, undo_send_delay, profile_picture_url, signature_html', // Include new columns in return
             [email, hashedPassword, name]
         );
         return res.rows[0];
     },
 
     async findById(id) {
-        const res = await pool.query('SELECT id, email, name FROM users WHERE id = $1', [id]);
+        // Include new columns in SELECT
+        const res = await pool.query('SELECT id, email, name, max_page_size, undo_send_delay, profile_picture_url, signature_html FROM users WHERE id = $1', [id]);
         return res.rows[0];
     },
 
@@ -55,7 +57,7 @@ const User = {
         });
 
         const res = await pool.query(
-            'INSERT INTO sent_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder, is_starred) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, FALSE) RETURNING *', // Default is_starred: FALSE
+            'INSERT INTO sent_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder, is_starred) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, FALSE) RETURNING *',
             [userId, sender, JSON.stringify(recipients), subject, plainBody, htmlBody, 'sent']
         );
         return res.rows[0];
@@ -68,13 +70,12 @@ const User = {
         });
 
         const res = await pool.query(
-            'INSERT INTO received_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder, is_starred) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, FALSE) RETURNING *', // Default is_starred: FALSE
+            'INSERT INTO received_emails (user_id, sender, recipients, subject, plain_body, body_html, received_at, folder, is_starred) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, FALSE) RETURNING *',
             [userId, sender, JSON.stringify(recipients), subject, finalPlainBody, htmlBody, 'inbox']
         );
         return res.rows[0];
     },
 
-    // Modified to filter out trashed emails and use robust recipients parsing, and include is_starred
     async getSentEmails(userId) {
         const res = await pool.query(
             "SELECT id, sender, recipients, subject, plain_body, body_html, received_at, is_starred FROM sent_emails WHERE user_id = $1 AND folder != 'trash' ORDER BY received_at DESC",
@@ -86,7 +87,6 @@ const User = {
         }));
     },
 
-    // Modified to filter out trashed emails and use robust recipients parsing, and include is_starred
     async getReceivedEmails(userId) {
         const res = await pool.query(
             "SELECT id, sender, recipients, subject, plain_body, body_html, received_at, is_starred FROM received_emails WHERE user_id = $1 AND folder != 'trash' ORDER BY received_at DESC",
@@ -105,21 +105,20 @@ const User = {
             const res = await pool.query(
                 `UPDATE drafts
                  SET recipient_email = $1, subject = $2, body_html = $3, attachments_info = $4, last_saved_at = NOW(), is_trashed = FALSE
-                 WHERE id = $5 AND user_id = $6 RETURNING id, is_starred`, // Include is_starred in return
+                 WHERE id = $5 AND user_id = $6 RETURNING id, is_starred`,
                 [recipientEmail, subject, bodyHtml, attachmentsInfo, draftId, userId]
             );
             return res.rows[0];
         } else {
             const res = await pool.query(
                 `INSERT INTO drafts (user_id, recipient_email, subject, body_html, attachments_info, last_saved_at, is_trashed, is_starred)
-                 VALUES ($1, $2, $3, $4, $5, NOW(), FALSE, FALSE) RETURNING id, is_starred`, // Default is_starred: FALSE
+                 VALUES ($1, $2, $3, $4, $5, NOW(), FALSE, FALSE) RETURNING id, is_starred`,
                 [userId, recipientEmail, subject, bodyHtml, attachmentsInfo]
             );
             return res.rows[0];
         }
     },
 
-    // Modified to filter out trashed drafts and include is_starred
     async getDraftsByUserId(userId) {
         const res = await pool.query(
             `SELECT id, recipient_email, subject, body_html, attachments_info, last_saved_at, is_starred
@@ -159,7 +158,6 @@ const User = {
         return res.rows[0];
     },
 
-    // Modified to include is_starred for trashed items
     async getTrashedItemsByUserId(userId) {
         const trashedSent = await pool.query(
             `SELECT id, 'sent' as type, sender, recipients, subject, plain_body, body_html, received_at as last_saved_at, folder, is_starred
@@ -242,7 +240,6 @@ const User = {
         return res.rows[0];
     },
 
-    // NEW: Function to update starred status for emails
     async updateEmailStarredStatus(emailId, userId, emailType, isStarred) {
         let tableName;
         if (emailType === 'sent') {
@@ -257,41 +254,36 @@ const User = {
             `UPDATE ${tableName} SET is_starred = $1 WHERE id = $2 AND user_id = $3 RETURNING id, is_starred`,
             [isStarred, emailId, userId]
         );
-        return res.rows[0]; // Returns { id, is_starred }
+        return res.rows[0];
     },
 
-    // NEW: Function to update starred status for drafts
     async updateDraftStarredStatus(draftId, userId, isStarred) {
         const res = await pool.query(
             `UPDATE drafts SET is_starred = $1 WHERE id = $2 AND user_id = $3 RETURNING id, is_starred`,
             [isStarred, draftId, userId]
         );
-        return res.rows[0]; // Returns { id, is_starred }
+        return res.rows[0];
     },
 
-    // NEW: Function to get all starred items
     async getStarredItemsByUserId(userId) {
-        // Fetch starred sent emails
         const starredSent = await pool.query(
             `SELECT id, 'sent' as type, sender, recipients, subject, plain_body, body_html, received_at as last_saved_at, folder, is_starred
              FROM sent_emails
-             WHERE user_id = $1 AND is_starred = TRUE AND folder != 'trash'`, // Only starred and not in trash
+             WHERE user_id = $1 AND is_starred = TRUE AND folder != 'trash'`,
             [userId]
         );
 
-        // Fetch starred received emails
         const starredReceived = await pool.query(
             `SELECT id, 'inbox' as type, sender, recipients, subject, plain_body, body_html, received_at as last_saved_at, folder, is_starred
              FROM received_emails
-             WHERE user_id = $1 AND is_starred = TRUE AND folder != 'trash'`, // Only starred and not in trash
+             WHERE user_id = $1 AND is_starred = TRUE AND folder != 'trash'`,
             [userId]
         );
 
-        // Fetch starred drafts
         const starredDrafts = await pool.query(
             `SELECT id, 'draft' as type, recipient_email as recipients, subject, body_html, attachments_info, last_saved_at, NULL as folder, is_starred
              FROM drafts
-             WHERE user_id = $1 AND is_starred = TRUE AND is_trashed = FALSE`, // Only starred and not in trash
+             WHERE user_id = $1 AND is_starred = TRUE AND is_trashed = FALSE`,
             [userId]
         );
 
@@ -304,7 +296,137 @@ const User = {
         allStarredItems.sort((a, b) => new Date(b.last_saved_at) - new Date(a.last_saved_at));
 
         return allStarredItems;
+    },
+
+   // --- FETCH ALL SETTINGS AND SIGNATURES ---
+   async getUserSettings(userId) {
+    // Step 1: Get the main user settings
+    const settingsRes = await pool.query(
+        'SELECT name, max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply FROM users WHERE id = $1',
+        [userId]
+    );
+    const settings = settingsRes.rows[0];
+
+    if (!settings) {
+        return null;
     }
+
+    // Step 2: Get all signatures for that user
+    const signaturesRes = await pool.query(
+        'SELECT * FROM signatures WHERE user_id = $1 ORDER BY name ASC',
+        [userId]
+    );
+    const signatures = signaturesRes.rows;
+
+    // Step 3: Combine them into a single object
+    return {
+        ...settings,
+        signatures: signatures,
+    };
+},
+
+// --- UPDATE MAIN USER SETTINGS (including default signatures) ---
+async updateUserSettings(userId, settings) {
+    const { max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply } = settings;
+    
+    // Use NULLIF to handle cases where an empty string or 0 is passed for "no default"
+    const res = await pool.query(
+        `UPDATE users
+         SET 
+            max_page_size = COALESCE($1, max_page_size),
+            undo_send_delay = COALESCE($2, undo_send_delay),
+            profile_picture_url = COALESCE($3, profile_picture_url),
+            default_signature_new = NULLIF($4, 0),
+            default_signature_reply = NULLIF($5, 0)
+         WHERE id = $6 RETURNING name, max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply`,
+        [
+            max_page_size, 
+            undo_send_delay, 
+            profile_picture_url, 
+            default_signature_new, 
+            default_signature_reply, 
+            userId
+        ]
+    );
+    return res.rows[0];
+},
+
+// --- SIGNATURE-SPECIFIC CRUD OPERATIONS ---
+
+/**
+ * Creates a new signature for a user.
+ */
+async createSignature(userId, name, content) {
+    const res = await pool.query(
+        'INSERT INTO signatures (user_id, name, content) VALUES ($1, $2, $3) RETURNING *',
+        [userId, name, content]
+    );
+    return res.rows[0];
+},
+
+/**
+ * Updates an existing signature.
+ */
+async updateSignature(signatureId, userId, name, content) {
+    const res = await pool.query(
+        'UPDATE signatures SET name = $1, content = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4 RETURNING *',
+        [name, content, signatureId, userId]
+    );
+    // Checking res.rows[0] ensures the user owns the signature they're trying to edit
+    if (!res.rows[0]) {
+        throw new Error('Signature not found or user not authorized.');
+    }
+    return res.rows[0];
+},
+
+/**
+ * Deletes a signature.
+ */
+async deleteSignature(signatureId, userId) {
+    // First, check if this signature is a default for the user and nullify if so
+    await pool.query(
+        `UPDATE users SET 
+            default_signature_new = CASE WHEN default_signature_new = $1 THEN NULL ELSE default_signature_new END,
+            default_signature_reply = CASE WHEN default_signature_reply = $1 THEN NULL ELSE default_signature_reply END
+        WHERE id = $2`,
+        [signatureId, userId]
+    );
+    
+    // Then, delete the signature itself
+    const res = await pool.query(
+        'DELETE FROM signatures WHERE id = $1 AND user_id = $2',
+        [signatureId, userId]
+    );
+    // res.rowCount will be 1 if deleted, 0 if not found/not owned
+    return res.rowCount;
+},
+async changePassword(userId, oldPassword, newPassword) {
+    // Step 1: Get the current hashed password from the database
+    const userRes = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    if (userRes.rows.length === 0) {
+        throw new Error('User not found.');
+    }
+    const storedHash = userRes.rows[0].password;
+
+    // Step 2: Compare the provided old password with the stored hash
+    const isMatch = await bcrypt.compare(oldPassword, storedHash);
+    if (!isMatch) {
+        // If they don't match, throw an error. This is a critical security check.
+        throw new Error('Incorrect current password.');
+    }
+
+    // Step 3: Hash the new password
+    const salt = await bcrypt.genSalt(10);
+    const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
+    // Step 4: Update the database with the new hashed password
+    await pool.query(
+        'UPDATE users SET password = $1 WHERE id = $2',
+        [newPasswordHash, userId]
+    );
+
+    return { success: true, message: 'Password updated successfully.' };
+},
 };
 
 module.exports = User;

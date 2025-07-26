@@ -5,10 +5,33 @@ const authenticateToken = require('../middleware/authMiddleware');
 const User = require('../models/userModel');
 const mailparser = require('mailparser');
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs');   
 
 const router = express.Router();
+ // --- MULTER CONFIG FOR DISK STORAGE (for profile pictures) ---
+// We need a separate multer instance for saving files to disk
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+      const uploadPath = 'public/uploads/';
+      // Ensure the directory exists
+      fs.mkdirSync(uploadPath, { recursive: true });
+      cb(null, uploadPath);
+    },
+    filename: function (req, file, cb) {
+      // Create a unique filename to avoid overwriting files
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, `user-${req.user.id}-${uniqueSuffix}${path.extname(file.originalname)}`);
+    }
+  });
+  const uploadProfilePic = multer({ storage: storage });
 
+// Initialize multer for handling file uploads and form data
 const upload = multer({ storage: multer.memoryStorage() });
+
+// ===============================================
+// CORE EMAIL & WEBHOOK ROUTES
+// ===============================================
 
 // Route to send email - NOW HANDLES FILE UPLOADS AND MOVING DRAFT TO TRASH
 router.post('/send-email', authenticateToken, upload.array('attachments'), async (req, res) => {
@@ -173,7 +196,9 @@ router.get('/emails', authenticateToken, async (req, res) => {
     }
 });
 
+// ===============================================
 // DRAFT ROUTES
+// ===============================================
 
 // Save or Update a Draft
 router.post('/drafts', authenticateToken, upload.none(), async (req, res) => {
@@ -191,7 +216,7 @@ router.post('/drafts', authenticateToken, upload.none(), async (req, res) => {
             attachmentsInfoString,
             id ? parseInt(id) : null
         );
-        res.status(200).json({ message: 'Draft saved successfully!', draftId: result.id, is_starred: result.is_starred }); // Include is_starred
+        res.status(200).json({ message: 'Draft saved successfully!', draftId: result.id, is_starred: result.is_starred });
     } catch (error) {
         console.error('Error saving draft:', error);
         res.status(500).json({ message: 'Failed to save draft.', error: error.message });
@@ -211,8 +236,9 @@ router.get('/drafts', authenticateToken, async (req, res) => {
     }
 });
 
-
+// ===============================================
 // TRASH ROUTES
+// ===============================================
 
 // Move an email (sent or inbox) to Trash
 router.post('/trash/email', authenticateToken, async (req, res) => {
@@ -313,7 +339,9 @@ router.delete('/trash/drafts/:id', authenticateToken, async (req, res) => {
     }
 });
 
+// ===============================================
 // RESTORE ROUTES
+// ===============================================
 
 // Restore an Email from Trash
 router.post('/trash/restore/email', authenticateToken, async (req, res) => {
@@ -362,12 +390,14 @@ router.post('/trash/restore/draft', authenticateToken, async (req, res) => {
     }
 });
 
-// NEW STARRED ROUTES
+// ===============================================
+// STARRED ROUTES
+// ===============================================
 
 // Toggle Starred Status for an Email
 router.patch('/starred/email', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { emailId, emailType, isStarred } = req.body; // isStarred should be a boolean
+    const { emailId, emailType, isStarred } = req.body;
 
     if (!emailId || !emailType || typeof isStarred !== 'boolean') {
         return res.status(400).json({ message: 'Email ID, type, and starred status are required.' });
@@ -392,7 +422,7 @@ router.patch('/starred/email', authenticateToken, async (req, res) => {
 // Toggle Starred Status for a Draft
 router.patch('/starred/draft', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { draftId, isStarred } = req.body; // isStarred should be a boolean
+    const { draftId, isStarred } = req.body;
 
     if (!draftId || typeof isStarred !== 'boolean') {
         return res.status(400).json({ message: 'Draft ID and starred status are required.' });
@@ -424,5 +454,125 @@ router.get('/starred', authenticateToken, async (req, res) => {
     }
 });
 
+// ===============================================
+// GENERAL SETTINGS ROUTES
+// ===============================================
+
+    // --- GET User's General Settings ---
+    router.get('/settings/general', authenticateToken, async (req, res) => {
+    try {
+        const settings = await User.getUserSettings(req.user.id);
+        if (!settings) {
+        return res.status(404).json({ message: 'Settings not found for user.' });
+        }
+        res.status(200).json(settings);
+    } catch (error) {
+        console.error('Error fetching general settings:', error);
+        res.status(500).json({ message: 'Failed to fetch settings.' });
+    }
+    });
+
+
+    // --- UPDATE User's General Settings ---
+    // Using upload.none() to handle form data from the frontend without file uploads
+    router.patch('/settings/general', authenticateToken, upload.none(), async (req, res) => {
+    try {
+        // The req.body will contain the settings fields to update
+        const updatedSettings = await User.updateUserSettings(req.user.id, req.body);
+        res.status(200).json({ 
+            message: 'Settings updated successfully!', 
+            settings: updatedSettings 
+        });
+    } catch (error) {
+        console.error('Error updating general settings:', error);
+        res.status(500).json({ message: 'Failed to update settings.' });
+    }
+    });
+   
+    // ===============================================
+// PROFILE PICTURE UPLOAD ROUTE
+// ===============================================
+router.post('/settings/upload-profile-picture', authenticateToken, uploadProfilePic.single('profilePicture'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: 'No profile picture file uploaded.' });
+      }
+  
+      // Construct the URL path to the uploaded file
+      const profilePictureUrl = `/uploads/${req.file.filename}`;
+  
+      // Update the user's settings in the database with the new URL
+      const updatedSettings = await User.updateUserSettings(req.user.id, {
+        profile_picture_url: profilePictureUrl
+      });
+  
+      res.status(200).json({
+        message: 'Profile picture uploaded successfully!',
+        settings: updatedSettings
+      });
+  
+    } catch (error) {
+      console.error('Error uploading profile picture:', error);
+      res.status(500).json({ message: 'Failed to upload profile picture.' });
+    }
+  });
+  // ===============================================
+// SIGNATURE CRUD ROUTES
+// ===============================================
+
+// --- CREATE a new signature ---
+router.post('/signatures', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { name, content } = req.body;
+
+    if (!name || !content) {
+        return res.status(400).json({ message: 'Signature name and content are required.' });
+    }
+
+    try {
+        const newSignature = await User.createSignature(userId, name, content);
+        res.status(201).json({ message: 'Signature created successfully!', signature: newSignature });
+    } catch (error) {
+        console.error('Error creating signature:', error);
+        res.status(500).json({ message: 'Failed to create signature.' });
+    }
+});
+
+// --- UPDATE an existing signature ---
+router.patch('/signatures/:id', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const signatureId = parseInt(req.params.id);
+    const { name, content } = req.body;
+
+    if (!name || !content) {
+        return res.status(400).json({ message: 'Signature name and content are required.' });
+    }
+
+    try {
+        const updatedSignature = await User.updateSignature(signatureId, userId, name, content);
+        res.status(200).json({ message: 'Signature updated successfully!', signature: updatedSignature });
+    } catch (error) {
+        console.error('Error updating signature:', error);
+        // The model throws an error if not found/authorized, which we catch here
+        res.status(404).json({ message: error.message });
+    }
+});
+
+// --- DELETE a signature ---
+router.delete('/signatures/:id', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const signatureId = parseInt(req.params.id);
+
+    try {
+        const rowCount = await User.deleteSignature(signatureId, userId);
+        if (rowCount === 0) {
+            return res.status(404).json({ message: 'Signature not found or user not authorized.' });
+        }
+        res.status(200).json({ message: 'Signature deleted successfully.' });
+    } catch (error) {
+        console.error('Error deleting signature:', error);
+        res.status(500).json({ message: 'Failed to delete signature.' });
+    }
+});
 
 module.exports = router;

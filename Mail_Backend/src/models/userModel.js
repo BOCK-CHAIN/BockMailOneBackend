@@ -300,9 +300,14 @@ const User = {
 
    // --- FETCH ALL SETTINGS AND SIGNATURES ---
    async getUserSettings(userId) {
-    // Step 1: Get the main user settings
+    // Step 1: Get the main user settings, now including label visibility
     const settingsRes = await pool.query(
-        'SELECT name, max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply FROM users WHERE id = $1',
+        `SELECT 
+            name, max_page_size, undo_send_delay, profile_picture_url, 
+            default_signature_new, default_signature_reply,
+            label_starred_visibility, label_sent_visibility, label_drafts_visibility,
+            label_trash_visibility, label_scheduled_visibility, label_spam_visibility
+         FROM users WHERE id = $1`,
         [userId]
     );
     const settings = settingsRes.rows[0];
@@ -311,7 +316,7 @@ const User = {
         return null;
     }
 
-    // Step 2: Get all signatures for that user
+    // Step 2: Get all signatures for that user (this part remains the same)
     const signaturesRes = await pool.query(
         'SELECT * FROM signatures WHERE user_id = $1 ORDER BY name ASC',
         [userId]
@@ -327,9 +332,13 @@ const User = {
 
 // --- UPDATE MAIN USER SETTINGS (including default signatures) ---
 async updateUserSettings(userId, settings) {
-    const { max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply } = settings;
+    const { 
+        max_page_size, undo_send_delay, profile_picture_url, 
+        default_signature_new, default_signature_reply,
+        label_starred_visibility, label_sent_visibility, label_drafts_visibility,
+        label_trash_visibility, label_scheduled_visibility, label_spam_visibility
+    } = settings;
     
-    // Use NULLIF to handle cases where an empty string or 0 is passed for "no default"
     const res = await pool.query(
         `UPDATE users
          SET 
@@ -337,14 +346,26 @@ async updateUserSettings(userId, settings) {
             undo_send_delay = COALESCE($2, undo_send_delay),
             profile_picture_url = COALESCE($3, profile_picture_url),
             default_signature_new = NULLIF($4, 0),
-            default_signature_reply = NULLIF($5, 0)
-         WHERE id = $6 RETURNING name, max_page_size, undo_send_delay, profile_picture_url, default_signature_new, default_signature_reply`,
+            default_signature_reply = NULLIF($5, 0),
+            label_starred_visibility = COALESCE($6, label_starred_visibility),
+            label_sent_visibility = COALESCE($7, label_sent_visibility),
+            label_drafts_visibility = COALESCE($8, label_drafts_visibility),
+            label_trash_visibility = COALESCE($9, label_trash_visibility),
+            label_scheduled_visibility = COALESCE($10, label_scheduled_visibility),
+            label_spam_visibility = COALESCE($11, label_spam_visibility)
+         WHERE id = $12 RETURNING *`, // Returning * is easiest here
         [
             max_page_size, 
             undo_send_delay, 
             profile_picture_url, 
             default_signature_new, 
-            default_signature_reply, 
+            default_signature_reply,
+            label_starred_visibility,
+            label_sent_visibility,
+            label_drafts_visibility,
+            label_trash_visibility,
+            label_scheduled_visibility,
+            label_spam_visibility,
             userId
         ]
     );

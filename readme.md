@@ -1,35 +1,15 @@
-## sql schema of different tables
-### Received Emails table
-```sql
-CREATE TABLE received_emails (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Links to the users table
-    sender VARCHAR(255) NOT NULL,
-    recipients JSONB NOT NULL, -- Stores an array of recipient emails (your user's email)
-    subject VARCHAR(255),
-    plain_body TEXT,
-    received_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+## Backend parts of BockMailOne
+### To run this backend part of BockMailOne:
+```bash
+npm i 
+nodemon server.js
 ```
-### Sent Emails table
-```sql
-CREATE TABLE sent_emails (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Links to the users table
-    sender VARCHAR(255) NOT NULL,
-    recipients JSONB NOT NULL, -- Stores an array of recipient emails (e.g., '["recipient1@ex.com", "recipient2@ex.com"]')
-    subject VARCHAR(255),
-    plain_body TEXT,
-    received_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-```
-### User table
-```sql
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL, -- Stores the hashed password
-    name VARCHAR(255),             -- New column for user's name
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+* You should create a .env file for below environment variables.
+```bash
+PORT=3001 
+DATABASE_URL= # Paste your Neon string here
+POSTAL_API_URL= # Your Postal server's API endpoint
+POSTAL_API_KEY= # The Password from your Postal API Credential
+JWT_SECRET= # Change this for production!
+APP_EMAIL_DOMAIN=
 ```
